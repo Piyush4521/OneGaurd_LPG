@@ -1,0 +1,17 @@
+{
+  "short_name": "OneGaurd",
+  "name": "OneGaurd LPG Leak Detection and Monitoring",
+  "description": "Continuous telemetry, gas-leak detection, and cylinder mass monitoring for residential LPG installations.",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "type": "image/svg+xml",
+      "sizes": "48x48 72x72 96x96 144x144 192x192 512x512"
+    }
+  ],
+  "start_url": "/",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "display": "standalone",
+  "orientation": "portrait-primary"
+}
