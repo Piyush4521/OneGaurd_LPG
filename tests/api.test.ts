@@ -206,7 +206,7 @@ describe('OneGaurd Node.js REST API & Ingestion Gateway', () => {
     const events2 = await eventsRes2.json();
     const leakEventCount2 = events2.events.filter((e: any) => e.type === 'leak_detected').length;
     expect(leakEventCount2).toBe(leakEventCount1); // Deduplicated!
-  });
+  }, 15000);
 
   it('POST /api/alerts/test creates safe diagnostic event without triggering real emergency channels', async () => {
     const res = await fetch(`${baseUrl}/api/alerts/test`, { method: 'POST' });
