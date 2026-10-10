@@ -8,6 +8,7 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+firebase.exe
 
 # Environment variables & secrets
 .env
