@@ -1,6 +1,7 @@
 # Node dependencies
 node_modules/
 .npm-cache/
+.npmrc
 .firebase/
 .pnp
 .pnp.js
