@@ -6,7 +6,8 @@
   "description": "OneGaurd LPG Leak Detection and Cylinder Mass Telemetry System",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "echo 'Backend build ready'",
+    "build:client": "tsc && vite build",
     "preview": "vite preview",
     "server": "tsx server/index.ts",
     "start": "tsx server/index.ts",
