@@ -46,6 +46,9 @@ const getApiBaseUrl = (): string => {
   return 'https://onegaurd-lpg.onrender.com';
 };
 
+import { realtimeDb } from './firebase';
+import { ref, onValue } from 'firebase/database';
+
 class DataService {
   private currentTelemetry: DeviceTelemetry;
   private settings: UserSettings;
@@ -54,6 +57,7 @@ class DataService {
   private syncInterval: ReturnType<typeof setInterval> | null = null;
   private isLiveConnected = false;
   private isSimulationOverride = false;
+  private isFirebaseSubscribed = false;
 
   constructor() {
     const savedSettings = localStorage.getItem(STORAGE_KEY_SETTINGS);
@@ -96,13 +100,41 @@ class DataService {
       seq: 1
     };
 
-    // Start background sync with backend API
+    // Start background sync with backend API and Firebase RTDB
     this.startBackendSync();
   }
 
   private startBackendSync() {
     if (this.syncInterval) clearInterval(this.syncInterval);
-    // Immediate initial sync
+
+    // 1. Instant Realtime Database WebSocket subscription
+    if (!this.isFirebaseSubscribed) {
+      try {
+        const deviceRef = ref(realtimeDb, `devices/${this.currentTelemetry.deviceId}`);
+        onValue(deviceRef, (snapshot) => {
+          const data = snapshot.val();
+          if (data && !this.isSimulationOverride) {
+            const now = Date.now();
+            const heartbeatAgeMs = now - (data.lastHeartbeat || data.timestamp || now);
+            this.currentTelemetry = {
+              ...this.currentTelemetry,
+              ...data,
+              online: heartbeatAgeMs < 35000,
+              gasPpm: null
+            };
+            this.isLiveConnected = true;
+            this.notifyListeners();
+          }
+        }, () => {
+          // Fallback to REST polling if WebSocket blocked
+        });
+        this.isFirebaseSubscribed = true;
+      } catch {
+        // Fallback to HTTP polling
+      }
+    }
+
+    // 2. Continuous REST Gateway polling fallback
     this.pollBackendTelemetry();
     this.syncInterval = setInterval(() => {
       if (!this.isSimulationOverride) {

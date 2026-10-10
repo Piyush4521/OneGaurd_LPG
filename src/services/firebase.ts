@@ -11,7 +11,8 @@ export const firebaseConfig = {
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET || "onegaurd-e63c0.firebasestorage.app",
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID || "336935929403",
   appId: import.meta.env.VITE_FIREBASE_APP_ID || "1:336935929403:web:5add4932a2bfb7f1b53e1e",
-  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "G-SF2QEKN3BL"
+  measurementId: import.meta.env.VITE_FIREBASE_MEASUREMENT_ID || "G-SF2QEKN3BL",
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL || "https://onegaurd-e63c0-default-rtdb.asia-southeast1.firebasedatabase.app"
 };
 
 // Primary user assigned to this Firebase instance

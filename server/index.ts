@@ -246,6 +246,17 @@ app.post('/api/device/:deviceId/telemetry', async (req: Request, res: Response) 
 
   latestTelemetryStore[deviceId] = telemetryRecord;
 
+  // Asynchronous sync to Firebase Realtime Database
+  const rtdbUrl = process.env.FIREBASE_DATABASE_URL || 'https://onegaurd-e63c0-default-rtdb.asia-southeast1.firebasedatabase.app';
+  fetch(`${rtdbUrl}/devices/${deviceId}.json`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(telemetryRecord),
+    signal: AbortSignal.timeout(3000)
+  }).catch(() => {
+    // Non-blocking Firebase sync fallback
+  });
+
   // Incident Recording, Notification & Deduplication
   let dispatchResult: DispatchResult | null = null;
   if (isLeak) {
