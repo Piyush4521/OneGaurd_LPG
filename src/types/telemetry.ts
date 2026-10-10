@@ -54,6 +54,8 @@ export interface AlertEvent {
     push: 'delivered' | 'failed' | 'disabled';
     sms: 'delivered' | 'failed' | 'disabled';
     voice: 'delivered' | 'failed' | 'disabled';
+    telegram?: 'delivered' | 'failed' | 'disabled' | 'skipped';
+    androidCallBridge?: 'accepted' | 'failed' | 'disabled' | 'skipped' | 'unknown';
   };
 }
 

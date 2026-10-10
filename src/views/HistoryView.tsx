@@ -86,9 +86,14 @@ export const HistoryView: React.FC<HistoryViewProps> = ({ events, onAcknowledge 
                     </td>
                     <td>
                       <div style={{ fontSize: '0.6875rem', color: '#64748b' }}>
+                        {evt.deliveryStatus.telegram && (
+                          <div>Telegram: <span style={{ color: evt.deliveryStatus.telegram === 'delivered' ? '#059669' : evt.deliveryStatus.telegram === 'failed' ? '#dc2626' : '#64748b' }}>{evt.deliveryStatus.telegram}</span></div>
+                        )}
+                        {evt.deliveryStatus.androidCallBridge && (
+                          <div>Call Bridge: <span style={{ color: evt.deliveryStatus.androidCallBridge === 'accepted' ? '#059669' : evt.deliveryStatus.androidCallBridge === 'failed' ? '#dc2626' : '#64748b' }}>{evt.deliveryStatus.androidCallBridge}</span></div>
+                        )}
                         <div>Push: <span style={{ color: evt.deliveryStatus.push === 'delivered' ? '#059669' : '#64748b' }}>{evt.deliveryStatus.push}</span></div>
-                        <div>SMS: <span style={{ color: evt.deliveryStatus.sms === 'delivered' ? '#059669' : '#64748b' }}>{evt.deliveryStatus.sms}</span></div>
-                        <div>Voice: <span style={{ color: evt.deliveryStatus.voice === 'delivered' ? '#059669' : '#64748b' }}>{evt.deliveryStatus.voice}</span></div>
+                        <div>Voice/SMS: <span style={{ color: evt.deliveryStatus.sms === 'delivered' ? '#059669' : '#64748b' }}>{evt.deliveryStatus.sms}</span></div>
                       </div>
                     </td>
                     <td>

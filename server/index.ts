@@ -1,6 +1,14 @@
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import {
+  dispatchLeakAlerts,
+  sendTelegramAlert,
+  triggerAndroidCallBridge,
+  DispatchResult,
+  maskPhoneNumber,
+  resetAlertCooldownState
+} from './services/notificationService';
 
 dotenv.config();
 
@@ -123,7 +131,7 @@ app.get('/api/devices/:deviceId/latest', (req: Request, res: Response) => {
 });
 
 // 5. Ingestion Endpoint for ESP32 Telemetry
-app.post('/api/device/:deviceId/telemetry', (req: Request, res: Response) => {
+app.post('/api/device/:deviceId/telemetry', async (req: Request, res: Response) => {
   const deviceId = req.params.deviceId as string;
   const device = DEVICE_REGISTRY[deviceId];
 
@@ -174,13 +182,37 @@ app.post('/api/device/:deviceId/telemetry', (req: Request, res: Response) => {
 
   latestTelemetryStore[deviceId] = telemetryRecord;
 
-  // Incident Recording & Deduplication
+  // Incident Recording, Notification & Deduplication
+  let dispatchResult: DispatchResult | null = null;
   if (isLeak) {
-    const lastEvent = eventLogStore[0];
-    const isDuplicate = lastEvent && lastEvent.type === 'leak_detected' && (Date.now() - new Date(lastEvent.createdAt).getTime() < 30000);
-    if (!isDuplicate) {
+    const assignedEventId = eventId || `EVT-${Math.floor(1000 + Math.random() * 9000)}`;
+
+    // Dispatch urgent notifications across Telegram and MacroDroid concurrently
+    dispatchResult = await dispatchLeakAlerts({
+      eventId: assignedEventId,
+      deviceId,
+      reading: gasRaw,
+      threshold: 450,
+      timestamp: new Date().toISOString(),
+      isTest: false
+    });
+
+    // Record incident in store if not throttled by cooldown
+    if (!dispatchResult.cooldownSuppressed) {
+      const telegramStatus = dispatchResult.telegram.status === 'DELIVERED'
+        ? 'delivered'
+        : dispatchResult.telegram.status === 'SKIPPED'
+          ? 'skipped'
+          : 'failed';
+
+      const callBridgeStatus = dispatchResult.callBridge.status === 'TRIGGER_ACCEPTED'
+        ? 'accepted'
+        : dispatchResult.callBridge.status === 'SKIPPED'
+          ? 'skipped'
+          : 'failed';
+
       eventLogStore.unshift({
-        id: `EVT-${Math.floor(1000 + Math.random() * 9000)}`,
+        id: assignedEventId,
         deviceId,
         type: 'leak_detected',
         severity: 'critical',
@@ -189,7 +221,26 @@ app.post('/api/device/:deviceId/telemetry', (req: Request, res: Response) => {
         gasRaw,
         weightKg: netGasWeight,
         acknowledged: false,
-        deliveryStatus: { push: 'delivered', sms: 'disabled', voice: 'disabled' }
+        deliveryStatus: {
+          push: 'delivered',
+          sms: 'disabled',
+          voice: 'disabled',
+          telegram: telegramStatus,
+          androidCallBridge: callBridgeStatus
+        },
+        auditDetails: {
+          telegram: {
+            status: dispatchResult.telegram.status,
+            statusCode: dispatchResult.telegram.statusCode,
+            error: dispatchResult.telegram.error
+          },
+          callBridge: {
+            status: dispatchResult.callBridge.status,
+            statusCode: dispatchResult.callBridge.statusCode,
+            error: dispatchResult.callBridge.error,
+            details: dispatchResult.callBridge.details
+          }
+        }
       });
     }
   }
@@ -197,7 +248,9 @@ app.post('/api/device/:deviceId/telemetry', (req: Request, res: Response) => {
   res.status(200).json({
     status: 'accepted',
     deviceId,
-    processedAt: Date.now()
+    processedAt: Date.now(),
+    leakDetected: isLeak,
+    notifications: dispatchResult || undefined
   });
 });
 
@@ -206,22 +259,72 @@ app.get('/api/devices/:deviceId/events', (_req: Request, res: Response) => {
   res.status(200).json({ events: eventLogStore });
 });
 
-// 7. Safe Test Alert Trigger
-app.post('/api/alerts/test', (_req: Request, res: Response) => {
+// 7. Safe Test Alert Trigger (Secured endpoint)
+app.post('/api/alerts/test', async (req: Request, res: Response) => {
+  const triggerDispatch = req.query.dispatch === 'true' || req.body?.dispatch === true || req.body?.triggerDispatch === true;
+  const token = (req.headers['x-device-token'] || req.headers['x-admin-key'] || '') as string;
+  const authHeader = req.headers['authorization'] || '';
+  const expectedSecret = process.env.DEVICE_SECRET_KEY || 'esp32_dev_token_4892bc';
+
+  // Explicit authentication validation
+  const hasAuthHeader = Boolean(token || authHeader);
+  const isValidAuth =
+    token === expectedSecret ||
+    authHeader === `Bearer ${expectedSecret}` ||
+    Object.values(DEVICE_REGISTRY).some((d) => d.secretToken === token);
+
+  // Reject unauthorized requests if explicit auth provided is invalid, or if real dispatch requested without auth
+  if ((hasAuthHeader && !isValidAuth) || (triggerDispatch && !isValidAuth)) {
+    return res.status(401).json({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'Valid authentication credentials required to access test alert dispatch.'
+      }
+    });
+  }
+
+  const testEventId = req.body?.eventId || `EVT-TEST-${Math.floor(1000 + Math.random() * 9000)}`;
+  const testDeviceId = req.body?.deviceId || 'ESP32-LPG-01';
+
+  let dispatchResult: DispatchResult | null = null;
+  if (triggerDispatch) {
+    dispatchResult = await dispatchLeakAlerts(
+      {
+        eventId: testEventId,
+        deviceId: testDeviceId,
+        reading: 180,
+        threshold: 450,
+        timestamp: new Date().toISOString(),
+        isTest: true
+      },
+      { bypassCooldown: true, isTest: true }
+    );
+  }
+
   const testEvent = {
-    id: `EVT-${Math.floor(1000 + Math.random() * 9000)}`,
-    deviceId: 'ESP32-LPG-01',
+    id: testEventId,
+    deviceId: testDeviceId,
     type: 'test_alert',
     severity: 'info',
     createdAt: new Date().toISOString(),
-    message: 'Manual alert transmission test verified. No actual gas leak present.',
+    message: triggerDispatch
+      ? 'Manual test alert dispatched via Telegram and MacroDroid Call Bridge channels.'
+      : 'Manual alert transmission test verified. No actual gas leak present.',
     gasRaw: 180,
     weightKg: 8.45,
     acknowledged: false,
-    deliveryStatus: { push: 'delivered', sms: 'disabled', voice: 'disabled' }
+    deliveryStatus: {
+      push: 'delivered',
+      sms: 'disabled',
+      voice: 'disabled',
+      telegram: dispatchResult?.telegram.status === 'DELIVERED' ? 'delivered' : dispatchResult ? 'failed' : 'disabled',
+      androidCallBridge: dispatchResult?.callBridge.status === 'TRIGGER_ACCEPTED' ? 'accepted' : dispatchResult ? 'failed' : 'disabled',
+    },
+    notifications: dispatchResult || undefined
   };
+
   eventLogStore.unshift(testEvent);
-  res.status(200).json({ status: 'ok', event: testEvent });
+  res.status(200).json({ status: 'ok', event: testEvent, notifications: dispatchResult || undefined });
 });
 
 // Start Express Server
@@ -232,4 +335,13 @@ if (process.env.NODE_ENV !== 'test') {
   });
 }
 
-export { app, DEVICE_REGISTRY, latestTelemetryStore, eventLogStore };
+export {
+  app,
+  DEVICE_REGISTRY,
+  latestTelemetryStore,
+  eventLogStore,
+  dispatchLeakAlerts,
+  sendTelegramAlert,
+  triggerAndroidCallBridge,
+  resetAlertCooldownState
+};
