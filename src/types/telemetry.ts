@@ -24,6 +24,8 @@ export interface DeviceTelemetry {
   eventId: string;
   firmwareVersion: string;
   batteryVoltage?: number;
+  wifiRssi?: number;
+  seq?: number;
 }
 
 export interface DeviceMetadata {

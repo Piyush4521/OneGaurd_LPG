@@ -47,10 +47,33 @@ const DEVICE_REGISTRY: Record<string, { ownerUid: string; secretToken: string; n
     ownerUid: 'usr_prod_demo_982',
     secretToken: process.env.DEVICE_SECRET_KEY || 'esp32_dev_token_4892bc',
     name: 'Kitchen Main Cylinder',
+  },
+  'onegaurd-esp32-01': {
+    ownerUid: 'usr_piyush_onegaurd_e63c0',
+    secretToken: process.env.DEVICE_SECRET_KEY || 'esp32_dev_token_4892bc',
+    name: 'OneGaurd LPG Platform 01',
   }
 };
 
 const latestTelemetryStore: Record<string, any> = {
+  'onegaurd-esp32-01': {
+    deviceId: 'onegaurd-esp32-01',
+    weightKg: 8.45,
+    totalMassKg: 23.55,
+    tareMassKg: 15.1,
+    gasRaw: 182,
+    gasPpm: null,
+    gasThresholdRaw: 2200,
+    leak: false,
+    sensorStatus: 'ok',
+    online: true,
+    timestamp: Date.now(),
+    lastHeartbeat: Date.now(),
+    eventId: 'EVT-INIT-OG01',
+    firmwareVersion: 'v1.5.0-prod',
+    batteryVoltage: 3.30,
+    wifiRssi: -58
+  },
   'ESP32-LPG-01': {
     deviceId: 'ESP32-LPG-01',
     weightKg: 8.45,
@@ -133,17 +156,43 @@ app.get('/api/devices/:deviceId/latest', (req: Request, res: Response) => {
 // 5. Ingestion Endpoint for ESP32 Telemetry
 app.post('/api/device/:deviceId/telemetry', async (req: Request, res: Response) => {
   const deviceId = req.params.deviceId as string;
-  const device = DEVICE_REGISTRY[deviceId];
+  let device = DEVICE_REGISTRY[deviceId];
 
   // Token Verification
-  const token = req.headers['x-device-token'];
-  if (!device || !token || token !== device.secretToken) {
+  const token = req.headers['x-device-token'] as string;
+  const masterSecret = process.env.DEVICE_SECRET_KEY || 'esp32_dev_token_4892bc';
+
+  // Dynamic auto-registration if valid hardware secret token is supplied
+  if (!device && token === masterSecret) {
+    device = {
+      ownerUid: 'usr_piyush_onegaurd_e63c0',
+      secretToken: masterSecret,
+      name: deviceId === 'onegaurd-esp32-01' ? 'OneGaurd LPG Platform 01' : deviceId
+    };
+    DEVICE_REGISTRY[deviceId] = device;
+  }
+
+  if (!device || !token || (token !== device.secretToken && token !== masterSecret)) {
     return res.status(401).json({
       error: { code: 'UNAUTHORIZED_DEVICE', message: 'Invalid or missing hardware credentials.' }
     });
   }
 
-  const { gasRaw, totalMassKg, tareMassKg, sensorStatus, batteryVoltage, eventId } = req.body;
+  const {
+    gasRaw,
+    gasThresholdRaw,
+    leak,
+    totalMassKg,
+    tareMassKg,
+    weightKg,
+    sensorStatus,
+    batteryVoltage,
+    wifiRssi,
+    seq,
+    timestamp,
+    eventId,
+    firmwareVersion
+  } = req.body;
 
   // Schema Validation
   if (typeof gasRaw !== 'number' || typeof totalMassKg !== 'number') {
@@ -159,25 +208,40 @@ app.post('/api/device/:deviceId/telemetry', async (req: Request, res: Response) 
     });
   }
 
+  const threshold = typeof gasThresholdRaw === 'number'
+    ? gasThresholdRaw
+    : (deviceId === 'onegaurd-esp32-01' ? 2200 : 450);
+
+  // Sustained leak status check
+  const isLeak = typeof leak === 'boolean' ? leak : gasRaw >= threshold;
+
   const calculatedTare = typeof tareMassKg === 'number' ? tareMassKg : 15.1;
-  const netGasWeight = Math.max(0, Number((totalMassKg - calculatedTare).toFixed(2)));
-  const isLeak = gasRaw >= 450;
+  const netGasWeight = typeof weightKg === 'number'
+    ? Number(weightKg.toFixed(2))
+    : Math.max(0, Number((totalMassKg - calculatedTare).toFixed(2)));
+
+  const parsedTimestamp = timestamp
+    ? (typeof timestamp === 'string' ? (new Date(timestamp).getTime() || Date.now()) : timestamp)
+    : Date.now();
 
   const telemetryRecord = {
     deviceId,
+    seq: typeof seq === 'number' ? seq : 1,
     gasRaw,
     gasPpm: null, // Uncalibrated without laboratory chamber
+    gasThresholdRaw: threshold,
     totalMassKg,
     tareMassKg: calculatedTare,
     weightKg: netGasWeight,
     leak: isLeak,
     sensorStatus: sensorStatus || 'ok',
     batteryVoltage: batteryVoltage || 3.3,
+    wifiRssi: typeof wifiRssi === 'number' ? wifiRssi : -60,
     online: true,
-    timestamp: Date.now(),
+    timestamp: parsedTimestamp,
     lastHeartbeat: Date.now(),
     eventId: eventId || `EVT-${Date.now()}`,
-    firmwareVersion: 'v1.4.2-prod'
+    firmwareVersion: firmwareVersion || 'v1.5.0-prod'
   };
 
   latestTelemetryStore[deviceId] = telemetryRecord;
@@ -192,7 +256,7 @@ app.post('/api/device/:deviceId/telemetry', async (req: Request, res: Response) 
       eventId: assignedEventId,
       deviceId,
       reading: gasRaw,
-      threshold: 450,
+      threshold: threshold,
       timestamp: new Date().toISOString(),
       isTest: false
     });

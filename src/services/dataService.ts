@@ -4,7 +4,7 @@ const STORAGE_KEY_SETTINGS = 'onegaurd_user_settings';
 const STORAGE_KEY_EVENTS = 'onegaurd_alert_events';
 
 export const DEFAULT_SETTINGS: UserSettings = {
-  gasThresholdRaw: 450,
+  gasThresholdRaw: 2200,
   debounceSeconds: 3,
   lowWeightKg: 2.5,
   cylinderCapacityKg: 14.2,
@@ -13,23 +13,37 @@ export const DEFAULT_SETTINGS: UserSettings = {
     sms: false,
     voice: false,
   },
-  emergencyPhone: '+1-555-0199',
+  emergencyPhone: '+918888360145',
   customDomain: 'app.onegaurd.com',
   quietHoursEnabled: false,
 };
 
 export const INITIAL_DEVICE: DeviceMetadata = {
-  deviceId: 'ESP32-LPG-01',
-  name: 'Kitchen Main Cylinder',
+  deviceId: 'onegaurd-esp32-01',
+  name: 'OneGaurd LPG Smart Platform 01',
   location: 'Ground Floor Utility Kitchen',
-  registeredAt: '2026-09-15T08:30:00Z',
+  registeredAt: '2026-10-10T08:30:00Z',
   lastSeenAt: new Date().toISOString(),
-  firmwareVersion: 'v1.4.2-prod',
-  calibrationVersion: 'CAL-2026-09-A',
+  firmwareVersion: 'v1.5.0-prod',
+  calibrationVersion: 'CAL-2026-10-A',
   cylinderCapacityKg: 14.2,
   tareMassKg: 15.1,
   enabled: true,
-  hardwareModel: 'ESP32-WROOM-32D / MQ-6 / HX711',
+  hardwareModel: 'ESP32 DevKit V1 / MQ-6 / HX711 / DS3231',
+};
+
+const getApiBaseUrl = (): string => {
+  const envUrl = import.meta.env.VITE_API_BASE_URL;
+  if (envUrl && envUrl.trim().length > 0) {
+    return envUrl.replace(/\/$/, '');
+  }
+  if (typeof window !== 'undefined') {
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+      return 'http://localhost:5000';
+    }
+  }
+  // Production fallback to Render gateway
+  return 'https://onegaurd-lpg.onrender.com';
 };
 
 class DataService {
@@ -37,8 +51,9 @@ class DataService {
   private settings: UserSettings;
   private events: AlertEvent[];
   private listeners: Set<(telemetry: DeviceTelemetry) => void> = new Set();
-  private simulationInterval: ReturnType<typeof setInterval> | null = null;
-  private isSimulatingJitter = true;
+  private syncInterval: ReturnType<typeof setInterval> | null = null;
+  private isLiveConnected = false;
+  private isSimulationOverride = false;
 
   constructor() {
     const savedSettings = localStorage.getItem(STORAGE_KEY_SETTINGS);
@@ -48,33 +63,21 @@ class DataService {
     this.events = savedEvents ? JSON.parse(savedEvents) : [
       {
         id: 'EVT-9041',
-        deviceId: 'ESP32-LPG-01',
+        deviceId: 'onegaurd-esp32-01',
         type: 'test_alert',
         severity: 'info',
         createdAt: new Date(Date.now() - 3600000 * 2).toISOString(),
-        message: 'System periodic diagnostic test completed. Local buzzer responded.',
+        message: 'System periodic diagnostic test completed. Local buzzer and RTC verified.',
         gasRaw: 185,
         weightKg: 8.4,
         acknowledged: true,
-        deliveryStatus: { push: 'delivered', sms: 'disabled', voice: 'disabled' },
-      },
-      {
-        id: 'EVT-8920',
-        deviceId: 'ESP32-LPG-01',
-        type: 'low_gas',
-        severity: 'warning',
-        createdAt: new Date(Date.now() - 86400000 * 3).toISOString(),
-        message: 'Cylinder level warning: remaining gas mass reached 2.4 kg threshold.',
-        gasRaw: 190,
-        weightKg: 2.4,
-        acknowledged: true,
-        deliveryStatus: { push: 'delivered', sms: 'disabled', voice: 'disabled' },
+        deliveryStatus: { push: 'delivered', sms: 'disabled', voice: 'disabled', telegram: 'delivered' },
       }
     ];
 
     const now = Date.now();
     this.currentTelemetry = {
-      deviceId: 'ESP32-LPG-01',
+      deviceId: 'onegaurd-esp32-01',
       weightKg: 8.45,
       totalMassKg: 23.55,
       tareMassKg: 15.1,
@@ -87,31 +90,98 @@ class DataService {
       timestamp: now,
       lastHeartbeat: now,
       eventId: 'TEL-INITIAL-01',
-      firmwareVersion: 'v1.4.2-prod',
-      batteryVoltage: 3.29,
+      firmwareVersion: 'v1.5.0-prod',
+      batteryVoltage: 3.30,
+      wifiRssi: -58,
+      seq: 1
     };
 
-    this.startBackgroundJitter();
+    // Start background sync with backend API
+    this.startBackendSync();
   }
 
-  private startBackgroundJitter() {
-    if (this.simulationInterval) clearInterval(this.simulationInterval);
-    this.simulationInterval = setInterval(() => {
-      if (!this.isSimulatingJitter || !this.currentTelemetry.online) return;
+  private startBackendSync() {
+    if (this.syncInterval) clearInterval(this.syncInterval);
+    // Immediate initial sync
+    this.pollBackendTelemetry();
+    this.syncInterval = setInterval(() => {
+      if (!this.isSimulationOverride) {
+        this.pollBackendTelemetry();
+      }
+    }, 3000);
+  }
 
-      const jitter = (Math.random() - 0.5) * 4;
-      const weightJitter = (Math.random() - 0.5) * 0.02;
+  public async pollBackendTelemetry(): Promise<void> {
+    const baseUrl = getApiBaseUrl();
+    const deviceId = this.currentTelemetry.deviceId;
 
-      this.currentTelemetry = {
-        ...this.currentTelemetry,
-        gasRaw: Math.max(120, Math.min(this.currentTelemetry.gasThresholdRaw - 50, Math.round(this.currentTelemetry.gasRaw + jitter))),
-        weightKg: Number(Math.max(0, this.currentTelemetry.weightKg + weightJitter).toFixed(2)),
-        timestamp: Date.now(),
-        lastHeartbeat: Date.now(),
-      };
+    try {
+      const res = await fetch(`${baseUrl}/api/devices/${deviceId}/latest`, {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(2500)
+      });
 
-      this.notifyListeners();
-    }, 4000);
+      if (res.ok) {
+        const live = await res.json();
+        const now = Date.now();
+        const heartbeatAgeMs = now - (live.lastHeartbeat || live.timestamp || now);
+        const isDeviceOnline = heartbeatAgeMs < 35000;
+
+        this.currentTelemetry = {
+          ...live,
+          online: isDeviceOnline,
+          gasPpm: null // Enforce uncalibrated labelling
+        };
+        this.isLiveConnected = true;
+        this.notifyListeners();
+
+        // Sync real events
+        this.pollBackendEvents();
+      } else {
+        // Fallback check: if onegaurd-esp32-01 isn't registered yet, try ESP32-LPG-01
+        if (deviceId === 'onegaurd-esp32-01') {
+          const fallbackRes = await fetch(`${baseUrl}/api/devices/ESP32-LPG-01/latest`, {
+            signal: AbortSignal.timeout(2000)
+          }).catch(() => null);
+
+          if (fallbackRes && fallbackRes.ok) {
+            const fallbackData = await fallbackRes.json();
+            this.currentTelemetry = {
+              ...fallbackData,
+              gasPpm: null
+            };
+            this.isLiveConnected = true;
+            this.notifyListeners();
+          }
+        }
+      }
+    } catch {
+      this.isLiveConnected = false;
+      const now = Date.now();
+      if (now - this.currentTelemetry.lastHeartbeat > 25000) {
+        this.currentTelemetry.online = false;
+        this.notifyListeners();
+      }
+    }
+  }
+
+  public async pollBackendEvents(): Promise<void> {
+    const baseUrl = getApiBaseUrl();
+    const deviceId = this.currentTelemetry.deviceId;
+    try {
+      const res = await fetch(`${baseUrl}/api/devices/${deviceId}/events`, {
+        signal: AbortSignal.timeout(2500)
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.events) && data.events.length > 0) {
+          this.events = data.events;
+          localStorage.setItem(STORAGE_KEY_EVENTS, JSON.stringify(this.events));
+        }
+      }
+    } catch {
+      // Ignore background event sync errors
+    }
   }
 
   public subscribeTelemetry(listener: (telemetry: DeviceTelemetry) => void): () => void {
@@ -131,7 +201,11 @@ class DataService {
   }
 
   public getDeviceMetadata(): DeviceMetadata {
-    return { ...INITIAL_DEVICE };
+    return {
+      ...INITIAL_DEVICE,
+      deviceId: this.currentTelemetry.deviceId,
+      lastSeenAt: new Date(this.currentTelemetry.lastHeartbeat || Date.now()).toISOString()
+    };
   }
 
   public getSettings(): UserSettings {
@@ -156,14 +230,15 @@ class DataService {
     localStorage.setItem(STORAGE_KEY_EVENTS, JSON.stringify(this.events));
   }
 
-  public triggerTestAlert(): AlertEvent {
+  public async triggerTestAlert(): Promise<AlertEvent> {
+    const baseUrl = getApiBaseUrl();
     const newEvent: AlertEvent = {
       id: `EVT-${Math.floor(1000 + Math.random() * 9000)}`,
       deviceId: this.currentTelemetry.deviceId,
       type: 'test_alert',
       severity: 'info',
       createdAt: new Date().toISOString(),
-      message: 'Operator initiated alert transmission test. Verification confirmed.',
+      message: 'Operator initiated diagnostic alert test. Verification confirmed.',
       gasRaw: this.currentTelemetry.gasRaw,
       weightKg: this.currentTelemetry.weightKg,
       acknowledged: false,
@@ -171,8 +246,24 @@ class DataService {
         push: this.settings.alerts.push ? 'delivered' : 'disabled',
         sms: this.settings.alerts.sms ? 'delivered' : 'disabled',
         voice: this.settings.alerts.voice ? 'delivered' : 'disabled',
+        telegram: 'delivered'
       },
     };
+
+    // Forward test dispatch to backend if available
+    try {
+      await fetch(`${baseUrl}/api/alerts/test?dispatch=true`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-device-token': 'esp32_dev_token_4892bc'
+        },
+        body: JSON.stringify({ deviceId: this.currentTelemetry.deviceId })
+      });
+    } catch {
+      // Local fallback record
+    }
+
     this.events = [newEvent, ...this.events];
     localStorage.setItem(STORAGE_KEY_EVENTS, JSON.stringify(this.events));
     return newEvent;
@@ -181,28 +272,18 @@ class DataService {
   /* Diagnostic / Simulation Control Overrides */
   public setSimulationState(mode: 'normal' | 'leak' | 'low_weight' | 'stale' | 'offline' | 'sensor_fault'): void {
     const now = Date.now();
+    this.isSimulationOverride = (mode !== 'normal');
+
     switch (mode) {
       case 'normal':
-        this.isSimulatingJitter = true;
-        this.currentTelemetry = {
-          ...this.currentTelemetry,
-          gasRaw: 182,
-          gasPpm: null,
-          leak: false,
-          weightKg: 8.45,
-          totalMassKg: 23.55,
-          sensorStatus: 'ok',
-          online: true,
-          timestamp: now,
-          lastHeartbeat: now,
-        };
+        this.isSimulationOverride = false;
+        this.pollBackendTelemetry();
         break;
 
       case 'leak':
-        this.isSimulatingJitter = false;
         this.currentTelemetry = {
           ...this.currentTelemetry,
-          gasRaw: 720,
+          gasRaw: 2450,
           gasPpm: null,
           leak: true,
           sensorStatus: 'ok',
@@ -216,14 +297,16 @@ class DataService {
           type: 'leak_detected',
           severity: 'critical',
           createdAt: new Date().toISOString(),
-          message: 'CRITICAL: Gas sensor concentration exceeded safety threshold (720 ADC units). Local hardware buzzer and shutoff activated.',
-          gasRaw: 720,
+          message: 'CRITICAL: Sustained gas reading exceeded threshold (2450 ADC units). Local hardware buzzer and shutoff activated.',
+          gasRaw: 2450,
           weightKg: this.currentTelemetry.weightKg,
           acknowledged: false,
           deliveryStatus: {
             push: this.settings.alerts.push ? 'delivered' : 'disabled',
             sms: this.settings.alerts.sms ? 'delivered' : 'disabled',
             voice: this.settings.alerts.voice ? 'delivered' : 'disabled',
+            telegram: 'delivered',
+            androidCallBridge: 'accepted'
           },
         };
         this.events = [leakEvent, ...this.events];
@@ -231,7 +314,6 @@ class DataService {
         break;
 
       case 'low_weight':
-        this.isSimulatingJitter = false;
         this.currentTelemetry = {
           ...this.currentTelemetry,
           weightKg: 1.2,
@@ -246,27 +328,24 @@ class DataService {
         break;
 
       case 'stale':
-        this.isSimulatingJitter = false;
         this.currentTelemetry = {
           ...this.currentTelemetry,
           online: true,
-          timestamp: now - 180000, // 3 minutes ago
+          timestamp: now - 180000,
           lastHeartbeat: now - 180000,
         };
         break;
 
       case 'offline':
-        this.isSimulatingJitter = false;
         this.currentTelemetry = {
           ...this.currentTelemetry,
           online: false,
-          timestamp: now - 600000, // 10 minutes ago
+          timestamp: now - 600000,
           lastHeartbeat: now - 600000,
         };
         break;
 
       case 'sensor_fault':
-        this.isSimulatingJitter = false;
         this.currentTelemetry = {
           ...this.currentTelemetry,
           sensorStatus: 'fault',
@@ -290,6 +369,10 @@ class DataService {
       createdAt: '2026-10-10T09:00:00Z',
       isDemoUser: false,
     };
+  }
+
+  public isConnectedToBackend(): boolean {
+    return this.isLiveConnected;
   }
 }
 

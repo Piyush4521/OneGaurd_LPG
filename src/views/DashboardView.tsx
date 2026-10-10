@@ -33,6 +33,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 }) => {
   const isStale = Date.now() - telemetry.lastHeartbeat > 60000;
   const isOffline = !telemetry.online;
+  const isWarming = telemetry.sensorStatus === 'warming';
   const isFault = telemetry.sensorStatus === 'fault';
   const isLeak = telemetry.leak;
   const isLowWeight = telemetry.weightKg <= settings.lowWeightKg;
@@ -46,6 +47,10 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     safetyStatusText = 'CRITICAL: COMBUSTIBLE GAS DETECTED';
     safetyStatusClass = 'critical';
     safetyStatusDesc = 'Gas concentration has breached the defined threshold. Local shutoff activated.';
+  } else if (isWarming) {
+    safetyStatusText = 'SENSOR WARMING: HEATER COIL STABILIZING';
+    safetyStatusClass = 'caution';
+    safetyStatusDesc = 'MQ-6 sensor is in its 180-second stabilization cycle. Alarm armed upon completion.';
   } else if (isFault) {
     safetyStatusText = 'SENSOR FAULT: ANALOG LINE UNREADABLE';
     safetyStatusClass = 'caution';

@@ -21,6 +21,8 @@ firebase.exe
 service-account*.json
 *.pem
 *.key
+firmware/**/config.h
+*.secret.h
 
 # Logs & scratch
 npm-debug.log*
